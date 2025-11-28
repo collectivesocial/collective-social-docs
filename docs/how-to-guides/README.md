@@ -32,15 +32,19 @@ How-to guides are directions that guide the reader through solving a real-world 
 5. **Address common obstacles** - Help readers get unstuck
 6. **Link to reference** - Don't duplicate detailed specs
 
-## Example How-to Guide Topics
+## Available How-to Guides
 
+### Development Environment
+- [How to Set Up Your VS Code Workspace](./how-to-set-up-your-workspace.md)
+
+<!-- ### Coming Soon
 - How to Configure OAuth for Multiple Domains
 - How to Handle Rate Limiting in Production
 - How to Set Up Database Migrations
 - How to Implement Custom Authentication Logic
 - How to Debug Session Issues
 - How to Optimize Firehose Performance
-- How to Deploy with Docker Compose
+- How to Deploy with Docker Compose -->
 
 ## How-to Guide Structure Template
 
