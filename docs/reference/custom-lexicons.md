@@ -24,9 +24,14 @@ Represents a collection (list) of media items.
 **Fields:**
 - `name` (required, string) - Display name for the collection
 - `description` (optional, string) - Optional description of the collection
+- `visibility` (optional, enum) - Visibility setting: `public` or `private` (defaults to `public`)
 - `purpose` (required, string) - Purpose identifier (e.g., 'app.collectivesocial.defs#curatelist')
 - `avatar` (optional, blob) - Optional avatar image for the collection
 - `createdAt` (required, datetime) - Timestamp when collection was created
+
+**Visibility:**
+- `public` - Collection appears on user's profile and can be viewed by anyone
+- `private` - Collection is only visible to the owner
 
 **Example:**
 ```json
@@ -34,6 +39,7 @@ Represents a collection (list) of media items.
   "$type": "app.collectivesocial.list",
   "name": "My Favorite Books",
   "description": "Books I've read and loved",
+  "visibility": "public",
   "purpose": "app.collectivesocial.defs#curatelist",
   "createdAt": "2025-11-28T12:00:00.000Z"
 }
@@ -81,6 +87,7 @@ const record: AppCollectiveSocialList.Record = {
   $type: 'app.collectivesocial.list',
   name: 'My Reading List',
   description: 'Books to read',
+  visibility: 'public', // or 'private'
   purpose: 'app.collectivesocial.defs#curatelist',
   createdAt: new Date().toISOString(),
 };
@@ -104,6 +111,7 @@ const collections = response.data.records.map((record: any) => ({
   uri: record.uri,
   name: record.value.name,
   description: record.value.description,
+  visibility: record.value.visibility || 'public',
   // ... other fields
 }));
 ```
@@ -159,6 +167,7 @@ export namespace AppCollectiveSocialList {
     $type?: 'app.collectivesocial.list';
     name: string;
     description?: string;
+    visibility?: 'public' | 'private';
     purpose: string;
     avatar?: {
       cid: string;
@@ -195,13 +204,32 @@ The new implementation:
 - Stores all data directly in the AT Protocol repo
 - No longer creates posts for each review
 
+## Public Collections Endpoint
+
+To fetch public collections for display on a user's profile:
+
+```typescript
+const response = await fetch(`${apiUrl}/collections/public/${userDid}`, {
+  credentials: 'include',
+});
+
+const { collections } = await response.json();
+// Returns only collections where visibility === 'public'
+```
+
+This endpoint:
+- Can be called with or without authentication
+- Only returns collections with `visibility: 'public'`
+- Suitable for profile pages and public discovery
+
 ## Benefits
 
 1. **Self-contained data** - All review information stored in the listitem record
 2. **No post pollution** - Reviews don't clutter the user's post feed
 3. **Efficient queries** - Direct record queries without post lookups
 4. **Richer metadata** - Custom fields for media type, status, ratings
-5. **Application ownership** - Clear data ownership and structure
+5. **Privacy controls** - Public/private visibility for collections
+6. **Application ownership** - Clear data ownership and structure
 
 ## Future Enhancements
 
