@@ -40,40 +40,49 @@ Collective Social is a **book/media tracking and review platform** built on the 
 - **Session-based auth**: OAuth via AT Protocol, sessions via iron-session (not JWT/localStorage)
 - **No global state management**: React local state + prop drilling (no Redux/Zustand/Context for data)
 
+### Repository Boundaries
+
+| Repo | Owns | Deploys |
+|------|------|---------|
+| `collective-social-web` | React frontend, routing, UI components, client-side logic | Static hosting (Vite build) |
+| `collective-social-api` | Express backend, DB migrations, AT Protocol integration, OAuth | Node.js server |
+| `collective-social-docs` | Human reference docs, knowledge priming, architecture decisions | N/A (reference only) |
+
+The **frontend never talks directly to AT Protocol or PostgreSQL**; all data flows through the API.
+The **docs repo is not auto-discovered by AI tools**; operational rules live in each code repo's `.github/copilot-instructions.md`.
+
 ---
 
-## 2. Tech Stack and Versions
+## 2. Tech Stack (Behavioral Notes)
+
+> Do not rely on pinned patch versions here; check `package.json` for current versions.
 
 ### Frontend (collective-social-web)
 
-| Technology | Version | Notes |
-|-----------|---------|-------|
-| React | 19.0.0 | Latest major version |
-| TypeScript | 5.x | Strict mode |
-| Vite | 6.0.1 | Build tool, HMR in dev |
-| Chakra UI | v3.30.0 | **Not v2** - significant API changes |
-| React Router DOM | 7.1.1 | File-based concepts but configured routes |
-| Emotion | latest | CSS-in-JS via Chakra |
-| Lucide React | via react-icons/lu | Icon library |
+| Technology | Major | Critical behavioral notes |
+|-----------|-------|---------------------------|
+| React | 19 | Function components only, no class components |
+| Vite | 7 | Build tool; `npm run build` runs `tsc -b && vite build` |
+| Chakra UI | **v3** | NOT v2. `Dialog` not `Modal`, `open` not `isOpen`, `colorPalette` not `colorScheme` |
+| React Router DOM | 7 | `useNavigate()` not `history.push()` |
+| Lucide React | - | Icons via `react-icons/lu` |
 
 ### Backend (collective-social-api)
 
-| Technology | Version | Notes |
-|-----------|---------|-------|
-| Node.js | 20.x LTS | Runtime |
-| Express.js | 5.x | **Not 4.x** - async error handling built-in |
-| TypeScript | 5.x | Strict mode |
-| Kysely | 0.28.8 | Type-safe SQL query builder (not an ORM) |
-| PostgreSQL | 15+ | Primary database |
-| @atproto/oauth-client-node | latest | AT Protocol OAuth |
-| iron-session | latest | Encrypted cookie sessions |
-| Pino | latest | Structured logging |
+| Technology | Major | Critical behavioral notes |
+|-----------|-------|---------------------------|
+| Express.js | **5** | NOT 4. Async errors auto-propagate (no `next(err)` needed) |
+| Kysely | 0.28 | Type-safe query builder. Use `sql` tagged template, NOT `ctx.db.raw()` |
+| PostgreSQL | 15+ | Columns are **camelCase** (no CamelCasePlugin, no snake_case mapping) |
+| iron-session | - | Encrypted cookie sessions (not JWT) |
+| Pino | - | Structured logging |
 
 ### Critical Version Notes
 
 - **Chakra UI v3**: `Modal` is now `Dialog`, `isOpen` is now `open`, `colorScheme` is now `colorPalette`
 - **Express 5**: Async errors auto-propagate (no need for `next(err)` in most cases)
 - **Kysely**: Use `sql` tagged template literal, NOT `ctx.db.raw()` (does not exist)
+- **Database casing**: Both Kysely interfaces AND actual PostgreSQL columns use camelCase (e.g., `createdAt`, `userDid`). There is no snake_case mapping layer.
 
 ---
 
@@ -148,9 +157,9 @@ collective-social-api/src/
 
 ### Database
 
-- **Tables**: snake_case plural (`media_items`, `review_segments`)
-- **Columns**: camelCase in Kysely interfaces, snake_case in actual PostgreSQL
-- **Migrations**: Sequential numbered strings (`'001'`, `'002'`, ... `'013'`)
+- **Tables**: camelCase (matching Kysely interfaces directly, e.g., `mediaItems`, `reviewSegments`)
+- **Columns**: camelCase everywhere (e.g., `createdAt`, `userDid`, `mediaType`). No CamelCasePlugin, no snake_case mapping.
+- **Migrations**: Sequential numbered strings (`'001'`, `'002'`, ... `'013'`) in `db.ts`
 
 ### AT Protocol
 
@@ -164,29 +173,38 @@ collective-social-api/src/
 ### Frontend: API Data Fetching (current pattern)
 
 ```tsx
-// Standard pattern: local state + useEffect + fetch
+// Standard pattern: local state + useEffect + fetch with cleanup
 const [data, setData] = useState<ItemType[]>([]);
 const [loading, setLoading] = useState(true);
 const [error, setError] = useState<string | null>(null);
 
 useEffect(() => {
+  const controller = new AbortController();
+
   const fetchData = async () => {
     try {
       const response = await fetch(`${apiUrl}/endpoint`, {
         credentials: 'include',  // ALWAYS include for auth
+        signal: controller.signal,
       });
       if (!response.ok) throw new Error('Failed to fetch');
       const result = await response.json();
       setData(result);
     } catch (err) {
+      if (err instanceof DOMException && err.name === 'AbortError') return;
       setError('Failed to load data');
     } finally {
       setLoading(false);
     }
   };
   fetchData();
+
+  return () => controller.abort();
 }, [apiUrl]);
 ```
+
+> **Always include `AbortController` cleanup** in useEffect fetches to prevent
+> state-after-unmount bugs and race conditions on rapid navigation.
 
 ### Frontend: Chakra UI v3 Dialog
 
@@ -249,24 +267,39 @@ await agent.api.com.atproto.repo.putRecord({
 
 ---
 
-## 6. Anti-Patterns (Do NOT Do These)
+## 6. Security Model
+
+- **Authentication**: AT Protocol OAuth flow; session stored in encrypted iron-session cookie (httpOnly, SameSite=lax)
+- **DID trust boundary**: The authenticated user's DID comes ONLY from `agent.did!` after `ctx.oauthClient.restore(sessionId)`. Never trust a DID from request body/params for write operations.
+- **CORS**: API allows credentials from the configured frontend origin only (`CORS_ORIGIN` env var)
+- **Input validation**: All user-supplied URIs are validated against AT Protocol URI format before DB queries
+- **Rate limiting**: Handled at infrastructure level (not application code currently)
+- **No secrets in frontend**: API URL is the only env var exposed to the client build
+
+---
+
+## 7. Anti-Patterns (Do NOT Do These)
 
 | Anti-Pattern | Why | Do This Instead |
 |-------------|-----|-----------------|
-| `ctx.db.raw(...)` | Does not exist in Kysely | Use `sql` tagged template |
+| `ctx.db.raw(...)` | Does not exist in Kysely | Use `sql` tagged template from `kysely` |
+| Guessing column names as snake_case | DB uses camelCase, no mapping layer | Use exact camelCase: `createdAt`, `userDid` |
 | `<Modal isOpen={...}>` | Chakra v2 API | Use `<DialogRoot open={...}>` |
 | `colorScheme="teal"` | Chakra v2 prop | Use `colorPalette="teal"` |
 | `history.push('/path')` | React Router v5 | Use `navigate('/path')` from `useNavigate()` |
 | JWT in localStorage | Security risk, not our pattern | Sessions via iron-session cookies |
 | `fetch()` without `credentials: 'include'` | Auth cookies won't be sent | Always include credentials |
+| `fetch()` without AbortController in useEffect | State-after-unmount bugs, race conditions | Return `controller.abort()` in cleanup |
+| Trusting DID from request body | DID must come from authenticated session | Always use `agent.did!` from OAuth restore |
+| Per-row external API calls in loops | N+1 performance problem | Batch with `getProfiles` (25/call) or pre-fetch |
+| `.selectAll()` in hot paths | Over-fetches columns, larger payloads | Select only needed columns |
+| Editing migration strings in `db.ts` | Breaks existing databases | Add a new numbered migration |
 | Class-based components | Not used in this codebase | Use function components with hooks |
 | Redux/Zustand/Context for server state | Over-engineering for current scale | Local state (future: TanStack Query) |
-| `.selectAll()` in hot paths | Over-fetches columns, larger payloads | Select only needed columns |
-| Per-row external API calls in loops | N+1 performance problem | Batch or pre-fetch data |
 
 ---
 
-## 7. Domain-Specific Knowledge
+## 8. Domain-Specific Knowledge
 
 ### Rating System
 
@@ -303,7 +336,7 @@ await agent.api.com.atproto.repo.putRecord({
 
 ---
 
-## 8. Curated Knowledge Sources
+## 9. Curated Knowledge Sources
 
 ### Official Documentation
 
@@ -334,7 +367,7 @@ await agent.api.com.atproto.repo.putRecord({
 
 ---
 
-## 9. Development Workflow
+## 10. Development Workflow
 
 ### Getting Started
 
@@ -351,12 +384,21 @@ cp .env.example .env # Configure environment
 npm run dev          # http://localhost:3000 (auto-runs migrations)
 ```
 
-### Testing (Manual)
+### Testing
 
-- No automated test suite yet (planned)
-- Frontend: Browser DevTools + React DevTools + Network tab
-- Backend: API client (Postman/Insomnia) + direct PostgreSQL queries
-- Integration: Run both locally, test end-to-end flows
+```bash
+# Backend
+npm test              # Vitest test suite (66 tests)
+
+# Frontend
+npm test              # Vitest + Testing Library (component tests)
+npm run build         # TypeScript check + production build
+```
+
+- **New code should include tests.** Both repos use Vitest.
+- Backend tests: `test/` directory, unit tests with mocked dependencies
+- Frontend tests: `src/test/` directory, component tests with `@testing-library/react`
+- Integration: Run both locally, test end-to-end flows manually
 
 ### Code Quality
 
@@ -372,20 +414,14 @@ npm run format       # Auto-format
 
 ---
 
-## 10. Known Performance Considerations
+## 11. Performance Invariants
 
-### Current Pain Points
+These are current rules, not aspirations:
 
-1. **No code splitting**: All pages are eagerly imported in App.tsx
-2. **N+1 profile fetches**: Comments and feed fetch profiles per-row from Bluesky API
-3. **No client-side caching**: Every navigation re-fetches data
-4. **Auth check blocks render**: Initial `/users/me` call blocks the entire app
+1. **Route-level code splitting**: All pages use `React.lazy()` + `Suspense` (see App.tsx)
+2. **Batch AT Protocol calls**: Use `app.bsky.actor.getProfiles` (max 25/call), never per-row `getProfile`
+3. **Explicit column selects**: Avoid `.selectAll()` in endpoints that return lists
+4. **Non-mutating transforms**: Never `.sort()` input arrays in-place; spread first
+5. **AbortController in useEffect**: All fetch calls must clean up on unmount
 
-### Recommended Improvements (Prioritized)
-
-1. Add `React.lazy()` + `Suspense` for route-level code splitting
-2. Batch or cache AT Protocol profile lookups
-3. Introduce TanStack Query for client-side caching and deduplication
-4. Narrow `.selectAll()` to specific columns in hot API paths
-5. Add database indexes for frequently-filtered columns
-6. Implement skeleton loading states instead of spinners
+> Further improvements (TanStack Query, DB indexes, skeleton states) are tracked in GitHub issues, not here.
